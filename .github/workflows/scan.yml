@@ -1,0 +1,90 @@
+name: Trading Agent Scan
+
+on:
+  schedule:
+    # ── Weekday scans (stocks + crypto) ───────────────────────
+    - cron: '45 13 * * 1-5'   # 13:45 UTC → 16:45 Israel summer (US open)
+    - cron: '0 17 * * 1-5'    # 17:00 UTC → 20:00 Israel summer (US midday)
+    - cron: '30 19 * * 1-5'   # 19:30 UTC → 22:30 Israel summer (pre-close)
+    # ── Daily crypto-only scan ────────────────────────────────
+    - cron: '0 3 * * *'        # 03:00 UTC → 06:00 Israel summer (7 days/week)
+
+  workflow_dispatch:
+    inputs:
+      # ── Normal manual run ──────────────────────────────────
+      crypto_only:
+        description: 'Scan crypto only (ignored when test_ticker is set)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+      # ── Single-ticker test — no DB writes, no Telegram ─────
+      test_ticker:
+        description: 'TEST MODE — ticker symbol to analyse (e.g. AAPL, BTC). Leave blank for a normal scan.'
+        required: false
+        default: ''
+
+      test_type:
+        description: 'Asset type for test_ticker'
+        required: false
+        default: 'stock'
+        type: choice
+        options: ['stock', 'crypto']
+
+jobs:
+  scan:
+    name: ${{ github.event.inputs.test_ticker != '' && format('Test — {0} ({1})', github.event.inputs.test_ticker, github.event.inputs.test_type) || 'Run analysis scan' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ══════════════════════════════════════════════════════════
+      # TEST MODE — single ticker, prints to log, no side-effects
+      # ══════════════════════════════════════════════════════════
+      - name: 'TEST — analyse single ticker'
+        if: ${{ github.event.inputs.test_ticker != '' }}
+        run: |
+          python test_single.py \
+            "${{ github.event.inputs.test_ticker }}" \
+            "${{ github.event.inputs.test_type }}"
+
+      # ══════════════════════════════════════════════════════════
+      # NORMAL SCAN — only runs when no test_ticker is provided
+      # ══════════════════════════════════════════════════════════
+      - name: Detect scan mode (crypto-only at 03:00 UTC)
+        if: ${{ github.event.inputs.test_ticker == '' }}
+        run: |
+          HOUR=$(date -u +%H)
+          MANUAL_CRYPTO="${{ github.event.inputs.crypto_only }}"
+          if [ "$HOUR" = "03" ] || [ "$MANUAL_CRYPTO" = "true" ]; then
+            echo "CRYPTO_ONLY=true"  >> "$GITHUB_ENV"
+            echo "Scan mode: crypto-only"
+          else
+            echo "CRYPTO_ONLY=false" >> "$GITHUB_ENV"
+            echo "Scan mode: all assets"
+          fi
+
+      - name: Run trading agent
+        if: ${{ github.event.inputs.test_ticker == '' }}
+        run: python src/main.py
+        env:
+          SUPABASE_URL:     ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:     ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY:   ${{ secrets.GEMINI_API_KEY }}
+          WATCHLIST:        ${{ secrets.WATCHLIST }}
+          CRYPTO_ONLY:      ${{ env.CRYPTO_ONLY }}
