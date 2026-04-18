@@ -35,6 +35,9 @@ from thesis_engine import (
     upsert_thesis,
 )
 
+from dotenv import load_dotenv
+load_dotenv()  # loads .env when running locally; no-op in GitHub Actions
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
